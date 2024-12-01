@@ -18,6 +18,11 @@ def calculate_distance(list1: np.ndarray, list2: np.ndarray) -> float:
     list2.sort()
     return np.sum(np.abs(list1 - list2))
 
+def calculate_similarity_score(list1: np.ndarray, list2: np.ndarray) -> float:
+    score = 0
+    for i in list1:
+        score += i * np.sum(list2 == i)
+    return score
 
 def main():
     list1 = np.array([
@@ -26,10 +31,11 @@ def main():
     list2 = np.array([
         4, 3, 5, 3, 9, 3
     ])
-    print(calculate_distance(list1, list2))
-    print(calculate_distance(*parse_input("test-input.txt")))
-    print("Task result:")
-    print(calculate_distance(*parse_input("input.txt")))
+    real_list1, real_list2 = parse_input("input.txt")
+    print("Task 1 test result:", calculate_distance(list1, list2))
+    print("Task 1 result:", calculate_distance(real_list1, real_list2))
+    print("Task 2 test result:", calculate_similarity_score(list1, list2))
+    print("Task 2 result:", calculate_similarity_score(real_list1, real_list2))
 
 if __name__ == '__main__':
     main()
