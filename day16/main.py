@@ -1,3 +1,4 @@
+from collections import defaultdict
 from enum import Enum
 import heapq
 
@@ -67,46 +68,41 @@ def forward_neighbor(i: int, j: int, facing_direction: Direction) -> tuple[int, 
 
 
 def get_neighboring_node(maze: list[str], node: Node, step_penalty: int,
-                          turn_penalty: int) -> tuple[Node, int] | None:
+                          turn_penalty: int) -> tuple[Node, int, list[tuple[int, int]]] | None:
     """
     NOTE: an infinite loop will evolve here if the maze is an endless circle without intersections
 
     :return: intersection, so first position where there are two paths, or None the path leads into a dead end
     """
-    # print(f"{node.i}d{node.j}d{direction_str(node.direction)}")
     distance = step_penalty
     i, j = forward_neighbor(node.i, node.j, node.direction)
 
     if maze[i][j] == "#":
         return None
 
+    visited_cells = [(node.i, node.j), (i, j)]
+
     direction = node.direction
     while True:
+        visited_cells.append((i, j))
         forward_i, forward_j = forward_neighbor(i, j, direction)
         side_direction_1, side_i_1, side_j_1, side_direction_2, side_i_2, side_j_2 = side_neighbors(i, j, direction)
-        # print(f" - {i}|{j}|{direction}")
         if i == len(maze) - 2 and j == 1 or i == 1 and j == len(maze[1]) - 2:
-            # print("S or E!")
-            return Node(direction, i, j), distance
+            return Node(direction, i, j), distance, visited_cells
         if maze[forward_i][forward_j] != "#":
             if maze[side_i_1][side_j_1] != "#" or maze[side_i_2][side_j_2] != "#":
-                # print("forward und side")
-                return Node(direction, i, j), distance
+                return Node(direction, i, j), distance, visited_cells
             distance += step_penalty
             i, j = forward_i, forward_j
         elif maze[side_i_1][side_j_1] != "#":
             if maze[side_i_2][side_j_2] != "#":
-                # print("beide sides")
-                return Node(direction, i, j), distance
-            # print("kurve")
+                return Node(direction, i, j), distance, visited_cells
             distance += step_penalty + turn_penalty
             direction, i, j = side_direction_1, side_i_1, side_j_1
         elif maze[side_i_2][side_j_2] != "#":
-            # print("kurve")
             distance += step_penalty + turn_penalty
             direction, i, j = side_direction_2, side_i_2, side_j_2
         else:
-            # print("dead end")
             return None
 
 
@@ -148,12 +144,14 @@ def establish_link(graph: dict[Node, list[list[Node | int]]], source: Node, targ
         graph[source].append([target, distance])
 
 
-def create_graph(maze: list[str], step_penalty=1, turn_penalty=1000) -> dict[Node, list[list[Node, int]]]:
+def create_graph(maze: list[str], step_penalty=1,
+                 turn_penalty=1000) -> tuple[dict[Node, list[list[Node, int]]], dict[tuple[Node, Node], list[tuple[int, int]]]]:
     """
     we assume here that the start position is in the bottom left and the end position is in the top right.
     """
     graph = {}
     nodes_to_go = []
+    cells_of_links = {}
 
     start_nodes = add_nodes_for_intersection(graph, len(maze) - 2, 1, turn_penalty)
     nodes_to_go.extend(start_nodes)
@@ -164,13 +162,15 @@ def create_graph(maze: list[str], step_penalty=1, turn_penalty=1000) -> dict[Nod
         result = get_neighboring_node(maze, current_node, step_penalty, turn_penalty)
         if result is None:
             continue
-        neighbor, distance = result
+        neighbor, distance, visited_cells = result
         if neighbor not in graph.keys():
             added_nodes = add_nodes_for_intersection(graph, neighbor.i, neighbor.j, turn_penalty)
             nodes_to_go.extend(added_nodes)
         establish_link(graph, current_node, neighbor, distance)
+        cells_of_links[(current_node, neighbor)] = visited_cells
+        cells_of_links[(neighbor, current_node)] = visited_cells
 
-    return graph
+    return graph, cells_of_links
 
 
 class DijkstraEntry:
@@ -181,58 +181,84 @@ class DijkstraEntry:
     def __lt__(self, other: 'DijkstraEntry'):
         return self.distances[self.node] < self.distances[other.node]
 
-def dijkstra(graph: dict[Node, list[list[Node, int]]], start_node: Node) -> dict[Node, int | float]:
-    result = {}
+def dijkstra(graph: dict[Node, list[list[Node, int]]], start_node: Node) -> tuple[dict[Node, int | float], dict[Node, list[Node]]]:
+    resulting_distances = {}
+    resulting_predecessors = defaultdict(list)
     distances = {node: float('inf') for node in graph.keys()}
     distances[start_node] = 0
     entries = [DijkstraEntry(start_node, distances)] + [DijkstraEntry(node, distances) for node in graph.keys()]
     heapq.heapify(entries)
     while len(entries) != 0:
         next_entry = heapq.heappop(entries)
-        result[next_entry.node] = distances[next_entry.node]
+        resulting_distances[next_entry.node] = distances[next_entry.node]
         changed = False
         for neighbor, distance_to_neighbor in graph[next_entry.node]:
             relaxed_distance = distances[next_entry.node] + distance_to_neighbor
+            if relaxed_distance == distances[neighbor]:
+                resulting_predecessors[neighbor].append(next_entry.node)
             if relaxed_distance < distances[neighbor]:
+                resulting_predecessors[neighbor] = [next_entry.node]
                 distances[neighbor] = relaxed_distance
                 changed = True
         if changed:
             heapq.heapify(entries)
-    return result
+    return resulting_distances, resulting_predecessors
 
 
-def shortest_distance(maze: list[str]) -> int:
-    graph = create_graph(maze)
+def collect_cells(cells_of_links: dict[tuple[Node, Node], list[tuple[int, int]]],
+                  predecessors: dict[Node, list[Node]], nodes: list[Node]):
+    cells = set()
+    visited_nodes = set()
+    while len(nodes) != 0:
+        next_node = nodes.pop(0)
+        visited_nodes.add(next_node)
 
-    shortest_distances = dijkstra(graph, Node(Direction.EAST, len(maze) - 2, 1))
+        for predecessor in predecessors[next_node]:
+            if (predecessor, next_node) in cells_of_links:
+                for cell in cells_of_links[(predecessor, next_node)]:
+                    cells.add(cell)
+            if predecessor not in visited_nodes:
+                nodes.append(predecessor)
+    return cells
 
-    return min(
-        shortest_distances[Node(Direction.EAST, 1, len(maze[1]) - 2)],
-        shortest_distances[Node(Direction.SOUTH, 1, len(maze[1]) - 2)],
-        shortest_distances[Node(Direction.WEST, 1, len(maze[1]) - 2)],
-        shortest_distances[Node(Direction.NORTH, 1, len(maze[1]) - 2)],
-    )
+
+def shortest_distance(maze: list[str]) -> tuple[int, int]:
+    graph, cells_of_links = create_graph(maze)
+
+    shortest_distances, predecessors = dijkstra(graph, Node(Direction.EAST, len(maze) - 2, 1))
+
+    min_distance = float('inf')
+    min_nodes = []
+    for i in [Direction.EAST, Direction.SOUTH, Direction.WEST, Direction.NORTH]:
+        node = Node(i, 1, len(maze[1]) - 2)
+        if shortest_distances[node] < min_distance:
+            min_distance = shortest_distances[node]
+            min_nodes = [node]
+        elif shortest_distances[node] == min_distance:
+            min_nodes.append(node)
+
+    return min_distance, len(collect_cells(cells_of_links, predecessors, min_nodes))
+
+# This code can be easily extended to give a result for task 2. While we construct the graph, we also store all cells
+# corresponding to a specific link when traversing the maze in get_neighboring_node. Then, when we do dijkstra, we also
+# store the predecessors of each node (plural for the case that there are equally long paths). Eventually, we can count
+# these paths
 
 def parse_input(path: str) -> list[str]:
     with open(path) as f:
         return f.read().splitlines()
 
-def direction_str(direction: Direction) -> str:
-    if direction == Direction.EAST:
-        return "EAST"
-    elif direction == Direction.SOUTH:
-        return "SOUTH"
-    elif direction == Direction.WEST:
-        return "WEST"
-    else:
-        return "NORTH"
-    # TODO delete this
 
 def main():
+    example_distance, example_cells_num = shortest_distance(parse_input("example-input.txt"))
+    distance, cells_num = shortest_distance(parse_input("input.txt"))
     print("=== 1 ===")
-    print("Example result:", shortest_distance(parse_input("example-input.txt")))
-    print("Task result:", shortest_distance(parse_input("input.txt")))
+    print("Example result:", example_distance)
+    print("Task result:", distance)
     print("=== 2 ===")
+    print("Example result:", example_cells_num)
+    print("Task result:", cells_num)
+
 
 if __name__ == '__main__':
     main()
